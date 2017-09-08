@@ -4,7 +4,7 @@
 // ###
 // ###
 // ### Technical University Munich, Computer Vision Group
-// ### Winter Semester 2015/2016, March 15 - April 15
+// ### Summer Semester 2017, September 11 - October 9
 // ###
 // ###
 // ###
