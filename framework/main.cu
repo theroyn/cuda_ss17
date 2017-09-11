@@ -15,9 +15,9 @@ using namespace std;
 //#define CAMERA
 
 
-void gamma_correct(cv::Mat *src, sv::Mat *dst)
+void gamma_correct(cv::Mat *src, cv::Mat *dst, float g)
 {
-    
+    for (int i=0; i< (*src.
 }
 
 
@@ -60,7 +60,7 @@ int main(int argc, char **argv)
     // ### Define your own parameters here as needed
     float gamma = 1.f;
     getParam("g", gamma, argc, argv);
-    cout << "gamma: " << gray << endl;
+    cout << "gamma: " << gamma << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
