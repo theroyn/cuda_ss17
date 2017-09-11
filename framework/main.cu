@@ -15,6 +15,10 @@ using namespace std;
 //#define CAMERA
 
 
+void gamma_correct(cv::Mat *src, sv::Mat *dst)
+{
+    
+}
 
 
 
@@ -47,13 +51,16 @@ int main(int argc, char **argv)
     int repeats = 1;
     getParam("repeats", repeats, argc, argv);
     cout << "repeats: " << repeats << endl;
-    
+    https://www.google.de/search?client=ubuntu&channel=fs&q=size_t&ie=utf-8&oe=utf-8&gfe_rd=cr&dcr=0&ei=CHa2WdasOq-DX-WCltgF
     // load the input image as grayscale if "-gray" is specifed
     bool gray = false;
     getParam("gray", gray, argc, argv);
     cout << "gray: " << gray << endl;
 
-    // ### Define your own parameters here as needed    
+    // ### Define your own parameters here as needed
+    float gamma = 1.f;
+    getParam("g", gamma, argc, argv);
+    cout << "gamma: " << gray << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA

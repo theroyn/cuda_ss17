@@ -26,6 +26,17 @@ void cuda_check(string file, int line)
 }
 
 
+__device__ void add_array(float *a, float *b, float *c, int n)
+{
+    size_t idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if (idx<n) c[idx] = a[idx] + b[idx];
+}
+
+__global__ void add_array_wrapper(float *a, float *b, float *c, int n)
+{
+    add_array(a, b, c, n);
+}
+
 int main(int argc, char **argv)
 {
     // alloc and init input arrays on host (CPU)
@@ -50,6 +61,28 @@ int main(int argc, char **argv)
     // init c
     for(int i=0; i<n; i++) c[i] = 0;
     
+    // copy to device
+    float *d_a, *d_b, *d_c;
+    size_t nbytes = (size_t)(n)*sizeof(int);
+    cudaMalloc(&d_a, nbytes); CUDA_CHECK;
+    cudaMalloc(&d_b, nbytes); CUDA_CHECK;
+    cudaMalloc(&d_c, nbytes); CUDA_CHECK;
+    cudaMemcpy(d_a, a, nbytes, cudaMemcpyHostToDevice); CUDA_CHECK;
+    cudaMemcpy(d_b, b, nbytes, cudaMemcpyHostToDevice); CUDA_CHECK;
+    cudaMemcpy(d_c, c, nbytes, cudaMemcpyHostToDevice); CUDA_CHECK;
+    
+    // launch kernel
+    dim3 block = dim3(128,1,1);
+    // dim3 grid = dim3((n + block.x –1) / block.x, 1, 1);
+    dim3 grid = dim3((n+block.x-1)/block.x,1,1);
+
+    add_array_wrapper<<<grid, block>>>(d_a, d_b, d_c, n);
+
+    // copy to host and deallocate
+    cudaMemcpy(c, d_c, nbytes, cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaFree(d_a); CUDA_CHECK;
+    cudaFree(d_b); CUDA_CHECK;
+    cudaFree(d_c); CUDA_CHECK;
 
 
     // GPU computation

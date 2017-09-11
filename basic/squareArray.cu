@@ -25,7 +25,16 @@ void cuda_check(string file, int line)
     }
 }
 
+__device__ void square_array(float *a, int n)
+{
+    size_t idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if (idx<n) a[idx] = a[idx]*a[idx];
+}
 
+__global__ void square_array_wrapper(float *a, int n)
+{
+    square_array(a, n);
+}
 
 
 int main(int argc,char **argv)
@@ -53,6 +62,23 @@ int main(int argc,char **argv)
     // GPU computation
     // reinit data
     for(int i=0; i<n; i++) a[i] = i;
+
+    // copy to device
+    float *d_a;
+    size_t nbytes = (size_t)(n)*sizeof(int);
+    cudaMalloc(&d_a, nbytes); CUDA_CHECK;
+    cudaMemcpy(d_a, a, nbytes, cudaMemcpyHostToDevice); CUDA_CHECK;
+    
+    // launch kernel
+    dim3 block = dim3(128,1,1);
+    // dim3 grid = dim3((n + block.x –1) / block.x, 1, 1);
+    dim3 grid = dim3((n+block.x-1)/block.x,1,1);
+
+    square_array_wrapper<<<grid, block>>>(d_a, n);
+
+    // copy to host and deallocate
+    cudaMemcpy(a, d_a, nbytes, cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaFree(d_a); CUDA_CHECK;
 
     
     // ###
