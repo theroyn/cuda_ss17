@@ -9,16 +9,16 @@
 
 #include "helper.h"
 #include <iostream>
+#include "Imager.h"
+#include <stdlib.h> 
+
 using namespace std;
 
 // uncomment to use the camera
 //#define CAMERA
 
 
-void gamma_correct(cv::Mat *src, cv::Mat *dst, float g)
-{
-    for (int i=0; i< (*src.
-}
+
 
 
 
@@ -51,16 +51,17 @@ int main(int argc, char **argv)
     int repeats = 1;
     getParam("repeats", repeats, argc, argv);
     cout << "repeats: " << repeats << endl;
-    https://www.google.de/search?client=ubuntu&channel=fs&q=size_t&ie=utf-8&oe=utf-8&gfe_rd=cr&dcr=0&ei=CHa2WdasOq-DX-WCltgF
     // load the input image as grayscale if "-gray" is specifed
     bool gray = false;
     getParam("gray", gray, argc, argv);
     cout << "gray: " << gray << endl;
 
     // ### Define your own parameters here as needed
-    float gamma = 1.f;
+    float gamma = 1.f, sigma = 1.f;
     getParam("g", gamma, argc, argv);
     cout << "gamma: " << gamma << endl;
+    getParam("s", sigma, argc, argv);
+    cout << "sigma: " << sigma << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -104,11 +105,15 @@ int main(int argc, char **argv)
     // ### TODO: Change the output image format as needed
     // ###
     // ###
+#if defined(L2) || defined(LAPLACIAN_NORM)
+    cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
+#else
     cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+#endif
     //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
-    //cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
     // ### Define your own output images here as needed
 
+    
 
 
 
@@ -122,9 +127,69 @@ int main(int argc, char **argv)
     float *imgIn = new float[(size_t)w*h*nc];
 
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
-    float *imgOut = new float[(size_t)w*h*mOut.channels()];
+    //float *imgOut = new float[(size_t)w*h*mOut.channels()];
 
+    // gpu vars init
+#if defined(GAMMA) || defined(DIVERGENCE)
+    int nI = w*h*nc;
+    int nO = w*h*mOut.channels();
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut;
 
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
+#ifdef L2
+    int nI = w*h*nc;
+    int nO = w*h;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut;
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
+#ifdef LAPLACIAN_NORM
+    int nI = w*h*nc;
+    int nO = w*h;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut, *d_gX, *d_gY, *d_divOut;
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gX, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gY, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_divOut, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
+#ifdef CONVOLUTION
+    int nI = w*h*nc;
+    int nO = w*h*nc;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut, *k;
+
+    int r = ceil(sigma * 3);
+    int d = (2*r)+1;
+    k = new float[(size_t)(d * d)];
+    kernel(k, r, sigma);
+    // cout << "r: " << r << ", d: " << d << ", s: " << sigma << endl;
+
+    // gpu allocs
+    /**cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gX, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gY, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_divOut, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;*/
+#endif
 
 
     // For camera mode: Make a loop to read in camera frames
@@ -134,6 +199,15 @@ int main(int argc, char **argv)
     // returns a value <0 if no key is pressed during this time, returns immediately with a value >=0 if a key is pressed
     while (cv::waitKey(30) < 0)
     {
+#if defined(DIVERGENCE) || defined(L2)
+        cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
+#endif
+#ifdef LAPLACIAN_NORM
+        cudaMemset(d_gX, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_gY, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_divOut, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
+#endif
     // Get camera image
     camera >> mIn;
     // convert to float representation (opencv loads image values as single bytes by default)
@@ -151,21 +225,52 @@ int main(int argc, char **argv)
 
 
 
-
-
+    // copy data from host to device
+#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2) || defined(LAPLACIAN_NORM)
+    cudaMemcpy(d_imgIn, imgIn, nbytesI, cudaMemcpyHostToDevice); CUDA_CHECK;
+#endif
     Timer timer; timer.start();
     // ###
     // ###
     // ### TODO: Main computation
     // ###
     // ###
-    timer.end();  float t = timer.get();  // elapsed time in seconds
+
+    for (int i = 0; i < repeats; ++i)
+    {
+#ifdef GAMMA
+    //gamma_correct_host(imgIn, imgOut, w, h, nc, gamma);
+    dim3 block = dim3(32, 8, 1);
+    dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
+    gamma_correct_device<<<grid, block>>>(d_imgIn, d_imgOut, gamma, w, h, nI);
+#endif
+#ifdef DIVERGENCE
+    dim3 block = dim3(32, 8, 1);
+    dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
+    divergence<<<grid, block>>>(d_imgIn, d_imgOut, w, h, nI);
+#endif
+#ifdef L2
+    dim3 block = dim3(32, 8, 1);
+    dim3 grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+    l2_norm<<<grid, block>>>(d_imgIn, d_imgOut, w, h, nc);
+#endif
+#ifdef LAPLACIAN_NORM
+    dim3 block = dim3(32, 8, 1);
+    dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
+    gradient<<<grid, block>>>(d_imgIn, d_gX, d_gY, w, h, nI);
+    divergence<<<grid, block>>>(d_gX, d_gY, d_divOut, w, h, nI);
+    grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+    l2_norm<<<grid, block>>>(d_divOut, d_imgOut, w, h, nc);
+#endif
+    }
+    cudaDeviceSynchronize();  CUDA_CHECK;
+    timer.end();  float t = timer.get() / (float) repeats;  // elapsed time in seconds
     cout << "time: " << t*1000 << " ms" << endl;
 
-
-
-
-
+    // copy data from device to host
+#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2) || defined(LAPLACIAN_NORM)
+    cudaMemcpy(imgOut, d_imgOut, nbytesO, cudaMemcpyDeviceToHost); CUDA_CHECK;
+#endif
 
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
@@ -185,6 +290,20 @@ int main(int argc, char **argv)
 #endif
 
 
+    // gpu vars deallocs
+#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2)
+    cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
+    cudaFree(d_imgIn); CUDA_CHECK;
+    cudaFree(d_imgOut); CUDA_CHECK;
+#endif
+#ifdef LAPLACIAN_NORM
+    cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
+    cudaFree(d_imgIn); CUDA_CHECK;
+    cudaFree(d_imgOut); CUDA_CHECK;
+    cudaFree(d_gX); CUDA_CHECK;
+    cudaFree(d_gY); CUDA_CHECK;
+    cudaFree(d_divOut); CUDA_CHECK;
+#endif
 
 
     // save input and result

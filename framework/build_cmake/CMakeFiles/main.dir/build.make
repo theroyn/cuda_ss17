@@ -280,6 +280,7 @@ CMakeFiles/main.dir/main_generated_main.cu.o: /usr/local/cuda-8.0/include/textur
 CMakeFiles/main.dir/main_generated_main.cu.o: /usr/local/cuda-8.0/include/vector_functions.h
 CMakeFiles/main.dir/main_generated_main.cu.o: /usr/local/cuda-8.0/include/vector_functions.hpp
 CMakeFiles/main.dir/main_generated_main.cu.o: /usr/local/cuda-8.0/include/vector_types.h
+CMakeFiles/main.dir/main_generated_main.cu.o: ../Imager.h
 CMakeFiles/main.dir/main_generated_main.cu.o: ../helper.h
 CMakeFiles/main.dir/main_generated_main.cu.o: ../main.cu
 CMakeFiles/main.dir/main_generated_main.cu.o: CMakeFiles/main.dir/main_generated_main.cu.o.cmake

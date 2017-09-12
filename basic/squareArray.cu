@@ -65,7 +65,7 @@ int main(int argc,char **argv)
 
     // copy to device
     float *d_a;
-    size_t nbytes = (size_t)(n)*sizeof(int);
+    size_t nbytes = (size_t)(n)*sizeof(float);
     cudaMalloc(&d_a, nbytes); CUDA_CHECK;
     cudaMemcpy(d_a, a, nbytes, cudaMemcpyHostToDevice); CUDA_CHECK;
     
