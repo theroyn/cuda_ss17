@@ -16,6 +16,8 @@
 //#define LAPLACIAN_NORM
 #define CONVOLUTION
 
+#define IDX(x, y, c, w, nc) ((x+(y*w))*nc) + c
+
 // using
 using namespace std;
 
@@ -36,13 +38,11 @@ void kernel(float *dst, int r, float s)
 {
     int w = (2*r)+1;
     float c = 1.f/(float)(2*M_PI*s*s), p;
-    cout << "c:" << c << endl;
     for (int a = -r; a <= r; ++a)
     {
         for (int b = -r; b <= r; ++b)
         {
             p = (float)((a*a)+(b*b))/(float)(2*s*s);
-            cout << "a:" << a << ", b:" << b << ", p:" << p << endl;
             dst[(a+r)+(b+r)*w] = c*exp((-1)*p);
         }
     }
@@ -51,6 +51,122 @@ void kernel(float *dst, int r, float s)
     convert_layered_to_mat(ker, dst);
     cv::normalize(ker, ker);
     convert_mat_to_layered (dst, ker);
+}
+
+void scale(float *src, float *dst, int n)
+{
+    float minV = 1, maxV = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        if (src[i] > maxV) maxV = src[i];
+        if (src[i] < minV) minV = src[i];
+    }
+    for (int i = 0; i < n; ++i)
+    {
+        dst[i] = (src[i] - minV) / (maxV - minV);
+    }
+}
+
+__host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int w, int h, int nc)
+{
+    if (x<0)
+    {
+        if (y<0)
+        {
+            return src[IDX(0, 0, c, w, nc)];
+        } 
+        else if (y>=h)
+        {
+            return src[IDX(0, h-1, c, w, nc)];
+        }
+        else
+        {
+            return src[IDX(0, y, c, w, nc)];
+        }
+    }
+    else if (x>w)
+    {
+        if (y<0)
+        {
+            return src[IDX(w-1, 0, c, w, nc)];
+        } 
+        else if (y>=h)
+        {
+            return src[IDX(w-1, h-1, c, w, nc)];
+        }
+        else
+        {
+            return src[IDX(w-1, y, c, w, nc)];
+        }
+    }
+    else
+    {
+        if (y<0)
+        {
+            return src[IDX(x, 0, c, w, nc)];
+        } 
+        else if (y>=h)
+        {
+            return src[IDX(x, h-1, c, w, nc)];
+        }
+        else
+        {
+            return src[IDX(x, y, c, w, nc)];
+        }
+    }
+}
+
+/**
+* params  src - source, dst - destination
+*         k - kernel, w - source width
+*         h - source height, nc - number of channels
+*         r - kernel radius(2r+1 X 2r+1)
+*/
+void conv_host(float *src, float *dst, float *k, int w, int h, int nc, int r)
+{
+    int kerW = (2*r) + 1;
+    for (int c = 0; c < nc; ++c)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            for (int y = 0; y < h; ++y)
+            {
+                dst[x + w*y] = 0;
+                for (int a = -r; a <= r; ++a)
+                {
+                    for (int b = -r; b <= r; ++b)
+                    {
+                        //cout << "x:" << x << ", y:" << y << ", c:" << c  << "a:" << a << ", b:" << b << endl;
+                        dst[((x + w*y)*nc) + c] += k[(a+r)+(b+r)*kerW]*get_mat_val(src, x-a, y-b, c, w, h, nc);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+* params  src - source, dst - destination
+*         k - kernel, w - source width
+*         h - source height, nc - number of channels
+*         r - kernel radius(2r+1 X 2r+1)
+*/
+__global__ void conv_device(float *src, float *dst, float *k, int w, int h, int nc, int r)
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t idx = x + w*y; //derive linear index
+    int c = idx%3;
+    size_t fIdx = (idx*nc) + c; //derive linear index
+    int kerW = (2*r) + 1;
+    //dst[idx] = 0;
+    for (int a = -r; a <= r; ++a)
+    {
+        for (int b = -r; b <= r; ++b)
+        {
+            if (x < w && y < h) dst[fIdx] += k[(a+r)+(b+r)*kerW]*get_mat_val(src, x-a, y-b, c, w, h, nc);
+        }
+    }
 }
 
 int get_tmp()
@@ -120,6 +236,13 @@ __global__ void l2_norm(float *src, float *dst, int w, int h, int nc)
 }
 
 
+void showSizeableImage(string title, const cv::Mat &mat, int x, int y)
+{
+    const char *wTitle = title.c_str();
+    cv::namedWindow(wTitle, CV_WINDOW_NORMAL);
+    cvMoveWindow(wTitle, x, y);
+    cv::imshow(wTitle, mat);
+}
 
 
 
