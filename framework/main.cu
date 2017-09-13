@@ -134,7 +134,7 @@ int main(int argc, char **argv)
     //float *imgOut = new float[(size_t)w*h*mOut.channels()];
 
     // gpu vars init
-#if defined(GAMMA) || defined(DIVERGENCE)
+#ifdef GAMMA
     int nI = w*h*nc;
     int nO = w*h*mOut.channels();
     size_t nbytesI = (size_t)(nI)*sizeof(float);
@@ -144,6 +144,34 @@ int main(int argc, char **argv)
 
     // gpu allocs
     cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
+#ifdef GRADIENT
+    int nI = w*h*nc;
+    int nO = w*h*nc;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut, *d_gX, *d_gY;
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gX, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gY, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
+#ifdef DIVERGENCE
+    int nI = w*h*nc;
+    int nO = w*h*nc;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut, *d_gX, *d_gY;
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gX, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gY, nbytesI); CUDA_CHECK;
     cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
 #endif
 #ifdef L2
@@ -173,7 +201,7 @@ int main(int argc, char **argv)
     cudaMalloc(&d_divOut, nbytesI); CUDA_CHECK;
     cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
 #endif
-#ifdef CONVOLUTION
+#if defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE)
     int nI = w*h*nc;
     int nO = w*h*nc;
     size_t nbytesI = (size_t)(nI)*sizeof(float);
@@ -189,17 +217,40 @@ int main(int argc, char **argv)
     float *kt = new float[(size_t)(d * d)];
     scale(k, kt, d*d);
     convert_layered_to_mat(mKer, kt);
-    cout << "r: " << r << ", d: " << d << ", s: " << sigma << endl;
+    cout << "mKer: " << mKer << endl;
 
     // gpu allocs
     cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
     cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
-
     int nK = d*d; // kernel
     size_t nbytesK = (size_t)(nK)*sizeof(float);
     cudaMalloc(&d_k, nbytesK); CUDA_CHECK;
     cudaMemcpy(d_k, k, nbytesK, cudaMemcpyHostToDevice); CUDA_CHECK;
-    cout << "after cudaMalloc" << endl;
+#endif
+#ifdef CONVOLUTION_CONSTANT
+    int nI = w*h*nc;
+    int nO = w*h*nc;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_imgOut, *k;
+
+    int r = ceil(sigma * 3);
+    cout << "r:" << r << endl;
+    int d = (2*r)+1;
+    k = new float[(size_t)(d * d)];
+    kernel(k, r, sigma);
+    cv::Mat mKer(d, d, CV_32FC1);
+    float *kt = new float[(size_t)(d * d)];
+    scale(k, kt, d*d);
+    convert_layered_to_mat(mKer, kt);
+    cout << "mKer: " << mKer << endl;
+
+    cudaMemcpyToSymbol(constKernel, k, (size_t)(d * d)*sizeof(float)); CUDA_CHECK;
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
 #endif
 
 
@@ -210,7 +261,17 @@ int main(int argc, char **argv)
     // returns a value <0 if no key is pressed during this time, returns immediately with a value >=0 if a key is pressed
     while (cv::waitKey(30) < 0)
     {
-#if defined(DIVERGENCE) || defined(L2)
+#ifdef L2
+        cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
+#endif
+#ifdef GRADIENT
+        cudaMemset(d_gX, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_gY, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
+#endif
+#ifdef DIVERGENCE
+        cudaMemset(d_gX, 0, nbytesO); CUDA_CHECK;
+        cudaMemset(d_gY, 0, nbytesO); CUDA_CHECK;
         cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
 #endif
 #ifdef LAPLACIAN_NORM
@@ -218,92 +279,134 @@ int main(int argc, char **argv)
         cudaMemset(d_gY, 0, nbytesO); CUDA_CHECK;
         cudaMemset(d_divOut, 0, nbytesO); CUDA_CHECK;
         cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
-#endif
-#ifdef CONVOLUTION
+#endif 
+#if defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
         cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
 #endif
-    // Get camera image
-    camera >> mIn;
-    // convert to float representation (opencv loads image values as single bytes by default)
-    mIn.convertTo(mIn,CV_32F);
-    // convert range of each channel to [0,1] (opencv default is [0,255])
-    mIn /= 255.f;
+        // Get camera image
+        camera >> mIn;
+        // convert to float representation (opencv loads image values as single bytes by default)
+        mIn.convertTo(mIn,CV_32F);
+        // convert range of each channel to [0,1] (opencv default is [0,255])
+        mIn /= 255.f;
 #endif
 
-    // Init raw input image array
-    // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
-    // But for CUDA it's better to work with layered images: rrr... ggg... bbb...
-    // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
-    convert_mat_to_layered (imgIn, mIn);
+        // Init raw input image array
+        // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
+        // But for CUDA it's better to work with layered images: rrr... ggg... bbb...
+        // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
+        convert_mat_to_layered (imgIn, mIn);
 
 
 
 
-    // copy data from host to device
-#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2) || defined(LAPLACIAN_NORM) || defined(CONVOLUTION)
-    cudaMemcpy(d_imgIn, imgIn, nbytesI, cudaMemcpyHostToDevice); CUDA_CHECK;
-    //memset(imgOut, 0, nbytesO);
-    //cudaDeviceSynchronize();  CUDA_CHECK;
+        // copy data from host to device
+#if defined(GAMMA) || defined(GRADIENT) || defined(DIVERGENCE) || defined(L2) \
+|| defined(LAPLACIAN_NORM) || defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) \
+|| defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
+        cudaMemcpy(d_imgIn, imgIn, nbytesI, cudaMemcpyHostToDevice); CUDA_CHECK;
+        //memset(imgOut, 0, nbytesO);
 #endif
-    Timer timer; timer.start();
-    // ###
-    // ###
-    // ### TODO: Main computation
-    // ###
-    // ###
+#ifdef CONVOLUTION_TEXTURE
+        texRef.addressMode[0] = cudaAddressModeClamp; // clamp x to border
+        texRef.addressMode[1] = cudaAddressModeClamp; // clamp y to border
+        texRef.filterMode = cudaFilterModeLinear; // linear interpolation
+        texRef.normalized = false; // access as (x+0.5f,y+0.5f), not as ((x+0.5f)/w,(y+0.5f)/h)
+        cudaChannelFormatDesc desc = cudaCreateChannelDesc<float>();
+        cudaBindTexture2D(NULL, &texRef, d_imgIn, &desc, w, h*nc, w*sizeof(d_imgIn[0])); CUDA_CHECK;
+#endif
+        Timer timer; timer.start();
+        // ###
+        // ###
+        // ### TODO: Main computation
+        // ###
+        // ###
 
-    for (int i = 0; i < repeats; ++i)
-    {
+        for (int i = 0; i < repeats; ++i)
+        {
 #ifdef GAMMA
-        //gamma_correct_host(imgIn, imgOut, w, h, nc, gamma);
-        dim3 block = dim3(32, 8, 1);
-        dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
-        gamma_correct_device<<<grid, block>>>(d_imgIn, d_imgOut, gamma, w, h, nI);
+            //gamma_correct_host(imgIn, imgOut, w, h, nc, gamma);
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w*nc + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+            gamma_correct_device<<<grid, block>>>(d_imgIn, d_imgOut, gamma, w, h, nc);
+#endif
+#ifdef GRADIENT
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            gradient<<<grid, block>>>(d_imgIn, d_gX, d_imgOut, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;//d_imgOut, d_gX, d_gY
 #endif
 #ifdef DIVERGENCE
-        dim3 block = dim3(32, 8, 1);
-        dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
-        divergence<<<grid, block>>>(d_imgIn, d_imgOut, w, h, nI);
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            gradient<<<grid, block>>>(d_imgIn, d_gX, d_gY, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+            divergence<<<grid, block>>>(d_gX, d_gY, d_imgOut, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
 #endif
 #ifdef L2
-        dim3 block = dim3(32, 8, 1);
-        dim3 grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
-        l2_norm<<<grid, block>>>(d_imgIn, d_imgOut, w, h, nc);
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+            l2_norm<<<grid, block>>>(d_imgIn, d_imgOut, w, h, nc);
 #endif
 #ifdef LAPLACIAN_NORM
-        dim3 block = dim3(32, 8, 1);
-        dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
-        gradient<<<grid, block>>>(d_imgIn, d_gX, d_gY, w, h, nI);
-        divergence<<<grid, block>>>(d_gX, d_gY, d_divOut, w, h, nI);
-        grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
-        l2_norm<<<grid, block>>>(d_divOut, d_imgOut, w, h, nc);
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            gradient<<<grid, block>>>(d_imgIn, d_gX, d_gY, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+            divergence<<<grid, block>>>(d_gX, d_gY, d_divOut, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+            grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+            l2_norm<<<grid, block>>>(d_divOut, d_imgOut, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
 #endif
 #ifdef CONVOLUTION
-        //conv_host(imgIn, imgOut, k, w, h, nc, r);
-        dim3 block = dim3(32, 8, 1);
-        dim3 grid = dim3(((nI/h) + block.x - 1) / block.x, ((nI/w) + block.y - 1) / block.y, 1);
-        conv_device<<<grid, block>>>(d_imgIn, d_imgOut, d_k, w, h, nc, r);
+            //conv_host(imgIn, imgOut, k, w, h, nc, r);
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            conv_device<<<grid, block>>>(d_imgIn, d_imgOut, d_k, w, h, r);
 #endif
-    }
-    cudaDeviceSynchronize();  CUDA_CHECK;
-    timer.end();  float t = timer.get() / (float) repeats;  // elapsed time in seconds
-    cout << "time: " << t*1000 << " ms" << endl;
+#ifdef CONVOLUTION_CONSTANT
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            conv_device_constant<<<grid, block>>>(d_imgIn, d_imgOut, w, h, r);
+#endif
+#ifdef CONVOLUTION_TEXTURE
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            conv_device_texture<<<grid, block>>>(d_imgOut, d_k, w, h, r);
+#endif
+#ifdef CONVOLUTION_SHARED
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            int smw = block.x + 2*r;
+            int smh = block.y + 2*r;
+            size_t smbytes = smw*smh*sizeof(float);
+            conv_device_shared<<<grid, block, smbytes>>>(d_imgIn, d_imgOut, d_k, w, h, r, smw, smh);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+#endif
+        }
+        cudaDeviceSynchronize();  CUDA_CHECK;
+        timer.end();  float t = timer.get() / (float) repeats;  // elapsed time in seconds
+        cout << "time: " << t*1000 << " ms" << endl;
 
-    // copy data from device to host
-#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2) || defined(LAPLACIAN_NORM) || defined(CONVOLUTION)
-    cudaMemcpy(imgOut, d_imgOut, nbytesO, cudaMemcpyDeviceToHost); CUDA_CHECK;
+        // copy data from device to host
+#if defined(GAMMA) || defined(GRADIENT) || defined(DIVERGENCE) || \
+defined(L2) || defined(LAPLACIAN_NORM) || defined(CONVOLUTION) \
+|| defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
+        cudaMemcpy(imgOut, d_imgOut, nbytesO, cudaMemcpyDeviceToHost); CUDA_CHECK;
 #endif
 
-    // show input image
-    showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
+        // show input image
+        showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
-    // show output image: first convert to interleaved opencv format from the layered raw array
-    convert_layered_to_mat(mOut, imgOut);
-    showImage("Output", mOut, 100+w+40, 100);
+        // show output image: first convert to interleaved opencv format from the layered raw array
+        convert_layered_to_mat(mOut, imgOut);
+        showImage("Output", mOut, 100+w+40, 100);
 
-    // ### Display your own output images here as needed
-#ifdef CONVOLUTION
-    showSizeableImage("Kernel", mKer, 100, 100+h+40);
+        // ### Display your own output images here as needed
+#if defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
+        showSizeableImage("Kernel", mKer, 100, 100+h+40);
 #endif
 
 #ifdef CAMERA
@@ -314,12 +417,29 @@ int main(int argc, char **argv)
     cv::waitKey(0);
 #endif
 
-
     // gpu vars deallocs
-#if defined(GAMMA) || defined(DIVERGENCE) || defined(L2) || defined(CONVOLUTION)
+#if defined(GAMMA) || defined(L2) || defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) \
+|| defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
     cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
     cudaFree(d_imgIn); CUDA_CHECK;
     cudaFree(d_imgOut); CUDA_CHECK;
+#endif
+#ifdef CONVOLUTION_TEXTURE
+    cudaUnbindTexture(texRef);
+#endif
+#ifdef GRADIENT
+    cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
+    cudaFree(d_imgIn); CUDA_CHECK;
+    cudaFree(d_imgOut); CUDA_CHECK;
+    cudaFree(d_gX); CUDA_CHECK;
+    cudaFree(d_gY); CUDA_CHECK;
+#endif
+#ifdef DIVERGENCE
+    cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
+    cudaFree(d_imgIn); CUDA_CHECK;
+    cudaFree(d_imgOut); CUDA_CHECK;
+    cudaFree(d_gX); CUDA_CHECK;
+    cudaFree(d_gY); CUDA_CHECK;
 #endif
 #ifdef LAPLACIAN_NORM
     cout << "nbytesI: " << nbytesI << " nbytesO: " << nbytesO << endl;
@@ -329,7 +449,7 @@ int main(int argc, char **argv)
     cudaFree(d_gY); CUDA_CHECK;
     cudaFree(d_divOut); CUDA_CHECK;
 #endif
-#ifdef CONVOLUTION
+#if defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE)
     cudaFree(d_k); CUDA_CHECK;
 #endif
 

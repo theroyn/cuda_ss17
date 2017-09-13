@@ -14,43 +14,68 @@
 //#define DIVERGENCE
 //#define L2
 //#define LAPLACIAN_NORM
-#define CONVOLUTION
+//#define CONVOLUTION
+//#define CONVOLUTION_SHARED
+//#define CONVOLUTION_TEXTURE
+#define CONVOLUTION_CONSTANT
 
 #define IDX(x, y, c, w, nc) ((x+(y*w))*nc) + c
+#define IDX2(x, y, w) (x)+((y)*w)
+#define IDX3(x, y, c, w, h) (x)+((y)*w)+((c)*w*h)
 
+//#define IDX3(x, y, c, w, nc) c+(x*nc)+(y*w*nc)
 // using
 using namespace std;
 
 // consts
+const int KERNEL_RADIUS_MAX = 20;
+__constant__ float constKernel[(KERNEL_RADIUS_MAX*2 + 1) * (KERNEL_RADIUS_MAX*2 + 1)];
+
+// globals
+texture<float,2,cudaReadModeElementType> texRef;
 
 // function declarations
+void kernel(float *dst, int r, float s);
+void scale(float *src, float *dst, int n);
+__host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int w, int h);
+void conv_host(float *src, float *dst, float *k, int w, int h, int nc, int r);
+__global__ void conv_device(float *src, float *dst, float *k, int w, int h, int r);
+__global__ void conv_device_constant(float *src, float *dst, int w, int h, int r);
+__global__ void conv_device_shared(float *src, float *dst, float *k, int w, int h, int r, int smw, int smh);
+__global__ void conv_device_texture(float *src, float *dst, float *k, int w, int h, int r);
 void gamma_correct_host(float *src, float *dst, int w, int h, int nc, float g);
-int get_tmp();
-void cuda_check(string file, int line);
-void kernel(float * dst, int r);
-__global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int n);
-__device__ void derive_x(float *src, float *dst, int w, int h, int n);
-__device__ void derive_y(float *src, float *dst, int w, int h, int n);
-__global__ void gradient(float *src, float *dst, int w, int h, int n);
+__global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int nc);
+__global__ void gradient(float *src, float *dstX,  float *dstY, int w, int h, int nc);
+__global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, int nc);
+__global__ void l2_norm(float *src, float *dst, int w, int h, int nc);
+void showSizeableImage(string title, const cv::Mat &mat, int x, int y);
+
 
 // function definitions
 void kernel(float *dst, int r, float s)
 {
     int w = (2*r)+1;
-    float c = 1.f/(float)(2*M_PI*s*s), p;
+    float c = 1.f/(float)(2*M_PI*s*s), p, sum = 0.f, add;
     for (int a = -r; a <= r; ++a)
     {
         for (int b = -r; b <= r; ++b)
         {
             p = (float)((a*a)+(b*b))/(float)(2*s*s);
-            dst[(a+r)+(b+r)*w] = c*exp((-1)*p);
+            add = c*exp((-1)*p);
+            dst[(a+r)+(b+r)*w] = add;
+            sum += add;
         }
     }
+    cout << "ker sum:" << sum << endl;
+    for (int i = 0; i < (2*r+1)*(2*r+1); ++i)
+    {
+        dst[i] /= sum;
+    }
     
-    cv::Mat ker(w, w, CV_32FC1);
+    /**cv::Mat ker(w, w, CV_32FC1), kerTmp(w, w, CV_32FC1);
     convert_layered_to_mat(ker, dst);
-    cv::normalize(ker, ker);
-    convert_mat_to_layered (dst, ker);
+    cv::normalize(ker, kerTmp, 1, 0, cv::NORM_L1);
+    convert_mat_to_layered (dst, kerTmp);*/
 }
 
 void scale(float *src, float *dst, int n)
@@ -67,53 +92,35 @@ void scale(float *src, float *dst, int n)
     }
 }
 
-__host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int w, int h, int nc)
+__host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int w, int h)
 {
-    if (x<0)
+    int xt, yt;
+    if (x<0) 
     {
-        if (y<0)
-        {
-            return src[IDX(0, 0, c, w, nc)];
-        } 
-        else if (y>=h)
-        {
-            return src[IDX(0, h-1, c, w, nc)];
-        }
-        else
-        {
-            return src[IDX(0, y, c, w, nc)];
-        }
+        xt = 0;
     }
-    else if (x>w)
+    else if (x>=w)
     {
-        if (y<0)
-        {
-            return src[IDX(w-1, 0, c, w, nc)];
-        } 
-        else if (y>=h)
-        {
-            return src[IDX(w-1, h-1, c, w, nc)];
-        }
-        else
-        {
-            return src[IDX(w-1, y, c, w, nc)];
-        }
+        xt = w-1;
     }
     else
     {
-        if (y<0)
-        {
-            return src[IDX(x, 0, c, w, nc)];
-        } 
-        else if (y>=h)
-        {
-            return src[IDX(x, h-1, c, w, nc)];
-        }
-        else
-        {
-            return src[IDX(x, y, c, w, nc)];
-        }
+        xt = x;
     }
+
+    if (y<0) 
+    {
+        yt = 0;
+    }
+    else if (y>=h)
+    {
+        yt = h-1;
+    }
+    else
+    {
+        yt = y;
+    }
+    return src[IDX3(xt, yt, c, w, h)];
 }
 
 /**
@@ -124,20 +131,21 @@ __host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int
 */
 void conv_host(float *src, float *dst, float *k, int w, int h, int nc, int r)
 {
-    int kerW = (2*r) + 1;
+    int kerW = (2*r) + 1, idx;
     for (int c = 0; c < nc; ++c)
     {
         for (int x = 0; x < w; ++x)
         {
             for (int y = 0; y < h; ++y)
             {
-                dst[x + w*y] = 0;
+                idx = IDX3(x,y,c,w,h);
+                dst[idx] = 0;
                 for (int a = -r; a <= r; ++a)
                 {
                     for (int b = -r; b <= r; ++b)
                     {
                         //cout << "x:" << x << ", y:" << y << ", c:" << c  << "a:" << a << ", b:" << b << endl;
-                        dst[((x + w*y)*nc) + c] += k[(a+r)+(b+r)*kerW]*get_mat_val(src, x-a, y-b, c, w, h, nc);
+                        dst[idx] += k[(a+r)+((b+r)*kerW)]*get_mat_val(src, x-a, y-b, c, w, h);
                     }
                 }
             }
@@ -151,27 +159,97 @@ void conv_host(float *src, float *dst, float *k, int w, int h, int nc, int r)
 *         h - source height, nc - number of channels
 *         r - kernel radius(2r+1 X 2r+1)
 */
-__global__ void conv_device(float *src, float *dst, float *k, int w, int h, int nc, int r)
+__global__ void conv_device(float *src, float *dst, float *k, int w, int h, int r)
 {
+
     int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    int c = idx%3;
-    size_t fIdx = (idx*nc) + c; //derive linear index
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
     int kerW = (2*r) + 1;
-    //dst[idx] = 0;
+
     for (int a = -r; a <= r; ++a)
     {
         for (int b = -r; b <= r; ++b)
         {
-            if (x < w && y < h) dst[fIdx] += k[(a+r)+(b+r)*kerW]*get_mat_val(src, x-a, y-b, c, w, h, nc);
+            if (x < w && y < h) dst[idx] += k[(a+r)+((b+r)*kerW)]*get_mat_val(src, x-a, y-b, c, w, h);
         }
     }
 }
 
-int get_tmp()
+__global__ void conv_device_constant(float *src, float *dst, int w, int h, int r)
 {
-    return TMP;
+
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
+    int kerW = (2*r) + 1;
+
+    for (int a = -r; a <= r; ++a)
+    {
+        for (int b = -r; b <= r; ++b)
+        {
+            if (x < w && y < h) dst[idx] += constKernel[(a+r)+((b+r)*kerW)]*get_mat_val(src, x-a, y-b, c, w, h);
+        }
+    }
+}
+
+__global__ void conv_device_texture(float *dst, float *k, int w, int h, int r)
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
+    int kerW = (2*r) + 1;
+    float val;
+
+    for (int a = -r; a <= r; ++a)
+    {
+        for (int b = -r; b <= r; ++b)
+        {
+            val = tex2D(texRef, (x-a)+0.5f, (yt-a)+0.5f);
+            if (x < w && y < h) dst[idx] += k[(a+r)+((b+r)*kerW)]*val;
+        }
+    }
+}
+
+__global__ void conv_device_shared(float *src, float *dst, float *k, int w, int h, int r, int smw, int smh)
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
+    int kerW = (2*r) + 1;
+
+    extern __shared__ float sm[];
+    int tidx = threadIdx.x, tidy = threadIdx.y;
+    int bw = blockDim.x, bh = blockDim.y;
+    int mx0 = bw*blockIdx.x - r, my0t = bh*blockIdx.y - r, mx, my, mc;
+    int my0 = my0t%h;
+
+    if (x < w && y < h)
+    {
+        for (int i=(tidx+(tidy*bw)); i < smw*smh; i += bw*bh)
+        {
+            mx = mx0 + (i%smw);
+            my = (my0t + (i%smh))%h;
+            sm[i] = get_mat_val(src, mx, my, c, w, h);
+        }
+    }
+    __syncthreads();
+
+    for (int a = -r; a <= r; ++a)
+    {
+        for (int b = -r; b <= r; ++b)
+        {
+            if (x < w && y < h) dst[idx] += k[(a+r)+((b+r)*kerW)]*sm[(tidx+r-a) + ((tidy+r-b)*smw)];
+        }
+    }
 }
 
 void gamma_correct_host(float *src, float *dst, int w, int h, int nc, float g)
@@ -182,56 +260,54 @@ void gamma_correct_host(float *src, float *dst, int w, int h, int nc, float g)
     }
 }
 
-__global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int n)
+__global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int nc)
 {
-    int x = threadIdx.x + blockDim.x * blockIdx.x;
+
+    int xt = threadIdx.x + blockDim.x * blockIdx.x;
+    int x = xt/nc;
+    int c = xt%nc;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    if (x < (n/h) && y < (n/w)) dst[idx] = powf(src[idx], g);
+    size_t idx = IDX3(x,y,c,w,h);
+    if (x < w && y < h) dst[idx] = powf(src[idx], g);
 }
 
-/**__device__ void derive_x(float *src, float *dst, int w, int h, int n)
+__global__ void gradient(float *src, float *dstX,  float *dstY, int w, int h, int nc)
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    if (x+1 < (n/h) && y < (n/w)) dst[idx] = src[idx+1] - src[idx];
-}*/
-
-/**__device__ void derive_y(float *src, float *dst, int w, int h, int n)
-{
-    int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    if (x < (n/h) && y+1 < (n/w)) dst[idx] = src[idx+w] - src[idx];
-}*/
-
-__global__ void gradient(float *src, float *dstX,  float *dstY, int w, int h, int n)
-{
-    int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    if (x+1 < (n/h) && y < (n/w)) dstX[idx] = src[idx+1] - src[idx];
-    if (x < (n/h) && y+1 < (n/w)) dstY[idx] = src[idx+w] - src[idx];
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
+    if (x+1 < w && y < h) dstX[idx] = src[IDX3(x+1,y,c,w,h)] - src[idx];
+    if (x < w && y+1 < h) dstY[idx] = src[IDX3(x,y+1,c,w,h)] - src[idx];
 }
 
-__global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, int n)
+__global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, int nc)
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t idx = x + w*y; //derive linear index
-    if (x < (n/h) && y < (n/w) && x>0 && y>0) dst[idx] = (srcX[idx] - srcX[idx-1]) + (srcY[idx] - srcY[idx-w]);
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
+    size_t idx = IDX3(x,y,c,w,h);
+    if (x < w && y < h && x>0 && y>0) dst[idx] = (srcX[idx] - srcX[IDX3(x-1,y,c,w,h)]) + (srcY[idx] - srcY[IDX3(x,y-1,c,w,h)]);
 }
 
 __global__ void l2_norm(float *src, float *dst, int w, int h, int nc)
 {
-    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    /**int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t idx = x + w*y; //derive linear index
+    int c = idx%nc;
+    size_t idx2 = (c + nc*x) +w*y; */
+
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t idx = IDX2(x,y,w);//x+y*w
     if (x < w && y < h)
     {
-        for (int c=0; c<nc; ++c) dst[idx] += src[idx*nc + c];
-        dst[idx] = sqrtf(dst[idx]);
+        /**for (int c=0; c<nc; ++c) dst[idx] += src[IDX3(x,y,c,w,h)];
+        dst[idx] = sqrtf(dst[idx]);*/
+        dst[idx] = src[IDX3(x,y,0,w,h)];
     } 
 }
 
