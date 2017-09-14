@@ -17,7 +17,11 @@
 //#define CONVOLUTION
 //#define CONVOLUTION_SHARED
 //#define CONVOLUTION_TEXTURE
-#define CONVOLUTION_CONSTANT
+//#define CONVOLUTION_CONSTANT
+#define STRUCTURE_TENSOR
+#ifdef STRUCTURE_TENSOR
+#define ROBUST_DERIVATIVE
+#endif
 
 #define IDX(x, y, c, w, nc) ((x+(y*w))*nc) + c
 #define IDX2(x, y, w) (x)+((y)*w)
@@ -47,6 +51,7 @@ void gamma_correct_host(float *src, float *dst, int w, int h, int nc, float g);
 __global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int nc);
 __global__ void gradient(float *src, float *dstX,  float *dstY, int w, int h, int nc);
 __global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, int nc);
+__global__ void pointwise_product(float *srcA, float *srcB, float *dst, int w, int h, int nc);
 __global__ void l2_norm(float *src, float *dst, int w, int h, int nc);
 void showSizeableImage(string title, const cv::Mat &mat, int x, int y);
 
@@ -121,6 +126,21 @@ __host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int
         yt = y;
     }
     return src[IDX3(xt, yt, c, w, h)];
+}
+
+__device__ int eigen_valus(float *src, float *res, int *exist)
+{
+    float t = src[0]+src[3];
+    float d = (src[0]*src[3]) - (src[1]*src[2]);
+    float pt = ((t*t)/4.f)-d, p;
+    if (pt>=0)
+    {
+        p = sqrtf(pt);
+        res[0] = 0.5*t-p;
+        res[1] = 0.5*t+p;
+        return 1;
+    }
+    return 0;
 }
 
 /**
@@ -263,10 +283,17 @@ void gamma_correct_host(float *src, float *dst, int w, int h, int nc, float g)
 __global__ void gamma_correct_device(float *src, float *dst, float g, int w, int h, int nc)
 {
 
-    int xt = threadIdx.x + blockDim.x * blockIdx.x;
+    /**int xt = threadIdx.x + blockDim.x * blockIdx.x;
     int x = xt/nc;
     int c = xt%nc;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t idx = IDX3(x,y,c,w,h);
+    if (x < w && y < h) dst[idx] = powf(src[idx], g);*/
+
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int yt = threadIdx.y + blockDim.y * blockIdx.y;
+    int y = yt%h;
+    int c = yt/h;
     size_t idx = IDX3(x,y,c,w,h);
     if (x < w && y < h) dst[idx] = powf(src[idx], g);
 }
@@ -278,8 +305,21 @@ __global__ void gradient(float *src, float *dstX,  float *dstY, int w, int h, in
     int y = yt%h;
     int c = yt/h;
     size_t idx = IDX3(x,y,c,w,h);
+#ifdef ROBUST_DERIVATIVE
+    float p1, p2;
+    if (x+1 < w && y+1 < h)
+    {
+        p1 = 3*src[IDX3(x+1,y+1,c,w,h)] + 10*src[IDX3(x+1,y,c,w,h)] + 3*src[IDX3(x+1,y-1,c,w,h)];
+        p2 = 3*src[IDX3(x-1,y+1,c,w,h)] + 10*src[IDX3(x-1,y,c,w,h)] + 3*src[IDX3(x-1,y-1,c,w,h)];
+        dstX[idx] = 0.03125f*(p1 - p2);
+        p1 = 3*src[IDX3(x+1,y+1,c,w,h)] + 10*src[IDX3(x,y+1,c,w,h)] + 3*src[IDX3(x-1,y+1,c,w,h)];
+        p2 = 3*src[IDX3(x+1,y-1,c,w,h)] + 10*src[IDX3(x,y-1,c,w,h)] + 3*src[IDX3(x-1,y-1,c,w,h)];
+        dstY[idx] = 0.03125f*(p1 - p2); // (1/32)*...
+    }
+#else
     if (x+1 < w && y < h) dstX[idx] = src[IDX3(x+1,y,c,w,h)] - src[idx];
     if (x < w && y+1 < h) dstY[idx] = src[IDX3(x,y+1,c,w,h)] - src[idx];
+#endif
 }
 
 __global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, int nc)
@@ -290,6 +330,17 @@ __global__ void divergence(float *srcX, float *srcY, float *dst, int w, int h, i
     int c = yt/h;
     size_t idx = IDX3(x,y,c,w,h);
     if (x < w && y < h && x>0 && y>0) dst[idx] = (srcX[idx] - srcX[IDX3(x-1,y,c,w,h)]) + (srcY[idx] - srcY[IDX3(x,y-1,c,w,h)]);
+}
+
+__global__ void pointwise_product(float *srcA, float *srcB, float *dst, int w, int h, int nc)
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t idx = IDX2(x,y,w);//x+y*w
+    if (x < w && y < h)
+    {
+        for (int c=0; c<nc; ++c) dst[idx] += srcA[IDX3(x,y,c,w,h)]*srcB[IDX3(x,y,c,w,h)];
+    }
 }
 
 __global__ void l2_norm(float *src, float *dst, int w, int h, int nc)
@@ -305,9 +356,9 @@ __global__ void l2_norm(float *src, float *dst, int w, int h, int nc)
     size_t idx = IDX2(x,y,w);//x+y*w
     if (x < w && y < h)
     {
-        /**for (int c=0; c<nc; ++c) dst[idx] += src[IDX3(x,y,c,w,h)];
-        dst[idx] = sqrtf(dst[idx]);*/
-        dst[idx] = src[IDX3(x,y,0,w,h)];
+        for (int c=0; c<nc; ++c) dst[idx] += src[IDX3(x,y,c,w,h)];
+        dst[idx] = sqrtf(dst[idx]);
+        //dst[idx] = src[IDX3(x,y,0,w,h)];
     } 
 }
 
