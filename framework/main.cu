@@ -15,7 +15,7 @@
 using namespace std;
 
 // uncomment to use the camera
-//#define CAMERA
+#define CAMERA
 
 
 
@@ -57,13 +57,17 @@ int main(int argc, char **argv)
     cout << "gray: " << gray << endl;
 
     // ### Define your own parameters here as needed
-    float gamma = 1.f, sigma = 1.f, factVal = 1.f;
+    float gamma = 1.f, sigma = 1.f, factVal = 1.f, alpha, beta;
     getParam("g", gamma, argc, argv);
     cout << "gamma: " << gamma << endl;
     getParam("s", sigma, argc, argv);
     cout << "sigma: " << sigma << endl;
     getParam("f", factVal, argc, argv);
     cout << "factor: " << factVal << endl;
+    getParam("a", alpha, argc, argv);
+    cout << "alpha: " << alpha << endl;
+    getParam("b", beta, argc, argv);
+    cout << "beta: " << beta << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -293,6 +297,37 @@ int main(int argc, char **argv)
     cudaMalloc(&d_imgOut12, nbytesO); CUDA_CHECK;
     cudaMalloc(&d_imgOut22, nbytesO); CUDA_CHECK;
 #endif
+#ifdef FEATURE_DETECTION
+    int nI = w*h*nc;
+    int nG = w*h;
+    int nO = w*h*nc;
+    size_t nbytesI = (size_t)(nI)*sizeof(float);
+    size_t nbytesG = (size_t)(nG)*sizeof(float);
+    size_t nbytesO = (size_t)(nO)*sizeof(float);
+    float *imgOut = (float *) malloc (nbytesO);
+    float *d_imgIn, *d_s, *k, *d_gX, *d_gY, *d_m11, *d_m12,
+            *d_m22, *d_imgOut11, *d_imgOut12, *d_imgOut22, *d_imgOut;
+
+    int r = ceil(sigma * 3);
+    int d = (2*r)+1;
+    k = new float[(size_t)(d * d)];
+    kernel(k, r, sigma);
+    cudaMemcpyToSymbol(constKernel, k, (size_t)(d * d)*sizeof(float)); CUDA_CHECK;
+
+
+    // gpu allocs
+    cudaMalloc(&d_imgIn, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_s, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gX, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_gY, nbytesI); CUDA_CHECK;
+    cudaMalloc(&d_m11, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_m12, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_m22, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_imgOut11, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_imgOut12, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_imgOut22, nbytesG); CUDA_CHECK;
+    cudaMalloc(&d_imgOut, nbytesO); CUDA_CHECK;
+#endif
 
 
     // For camera mode: Make a loop to read in camera frames
@@ -342,6 +377,18 @@ int main(int argc, char **argv)
         cudaMemset(d_imgOut12, 0, nbytesO); CUDA_CHECK;
         cudaMemset(d_imgOut22, 0, nbytesO); CUDA_CHECK;
 #endif
+#ifdef FEATURE_DETECTION
+        cudaMemset(d_s, 0, nbytesI); CUDA_CHECK;
+        cudaMemset(d_gX, 0, nbytesI); CUDA_CHECK;
+        cudaMemset(d_gY, 0, nbytesI); CUDA_CHECK;
+        cudaMemset(d_m11, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_m12, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_m22, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_imgOut11, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_imgOut12, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_imgOut22, 0, nbytesG); CUDA_CHECK;
+        cudaMemset(d_imgOut, 0, nbytesO); CUDA_CHECK;
+#endif
 
         // Init raw input image array
         // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
@@ -355,7 +402,8 @@ int main(int argc, char **argv)
         // copy data from host to device
 #if defined(GAMMA) || defined(GRADIENT) || defined(DIVERGENCE) || defined(L2) \
 || defined(LAPLACIAN_NORM) || defined(CONVOLUTION) || defined(CONVOLUTION_SHARED) \
-|| defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT) || defined(STRUCTURE_TENSOR)
+|| defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT) \
+|| defined(STRUCTURE_TENSOR) || defined(FEATURE_DETECTION)
         cudaMemcpy(d_imgIn, imgIn, nbytesI, cudaMemcpyHostToDevice); CUDA_CHECK;
         //memset(imgOut, 0, nbytesO);
 #endif
@@ -437,12 +485,25 @@ int main(int argc, char **argv)
             conv_device_shared<<<grid, block, smbytes>>>(d_imgIn, d_imgOut, d_k, w, h, r, smw, smh);
             cudaDeviceSynchronize();  CUDA_CHECK;
 #endif
-#ifdef ROBUST_DERIVATIVE
-            cout << "rub" << endl;
-#else
-            cout << "no rub" << endl;
-#endif
 #ifdef STRUCTURE_TENSOR
+            dim3 block = dim3(32, 8, 1);
+            dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            conv_device_constant<<<grid, block>>>(d_imgIn, d_s, w, h, r); // Compute S = G σ ∗ u
+            cudaDeviceSynchronize();  CUDA_CHECK;
+            gradient<<<grid, block>>>(d_s, d_gX, d_gY, w, h, nc);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+
+            grid = dim3((w + block.x - 1) / block.x, (h + block.y - 1) / block.y, 1);
+            // d_mxx are grayscale
+            pointwise_product<<<grid, block>>>(d_gX, d_gX, d_m11, w, h, nc);
+            pointwise_product<<<grid, block>>>(d_gX, d_gY, d_m12, w, h, nc);
+            pointwise_product<<<grid, block>>>(d_gY, d_gY, d_m22, w, h, nc);
+            
+            conv_device_constant<<<grid, block>>>(d_m11, d_imgOut11, w, h, r);
+            conv_device_constant<<<grid, block>>>(d_m12, d_imgOut12, w, h, r);
+            conv_device_constant<<<grid, block>>>(d_m22, d_imgOut22, w, h, r);
+#endif
+#ifdef FEATURE_DETECTION
             dim3 block = dim3(32, 8, 1);
             dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
             conv_device_constant<<<grid, block>>>(d_imgIn, d_s, w, h, r); // Compute S = G σ ∗ u
@@ -463,6 +524,11 @@ int main(int argc, char **argv)
             conv_device_constant<<<grid, block>>>(d_m11, d_imgOut11, w, h, r);
             conv_device_constant<<<grid, block>>>(d_m12, d_imgOut12, w, h, r);
             conv_device_constant<<<grid, block>>>(d_m22, d_imgOut22, w, h, r);
+            cudaDeviceSynchronize();  CUDA_CHECK;
+
+            //grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
+            feature_detect<<<grid, block>>>(d_imgIn, d_imgOut11, d_imgOut12, d_imgOut22, d_imgOut, w, h, alpha, beta);
+            cudaDeviceSynchronize();  CUDA_CHECK;
 #endif
         }
         cudaDeviceSynchronize();  CUDA_CHECK;
@@ -472,7 +538,8 @@ int main(int argc, char **argv)
         // copy data from device to host
 #if defined(GAMMA) || defined(GRADIENT) || defined(DIVERGENCE) || \
 defined(L2) || defined(LAPLACIAN_NORM) || defined(CONVOLUTION) \
-|| defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE) || defined(CONVOLUTION_CONSTANT)
+|| defined(CONVOLUTION_SHARED) || defined(CONVOLUTION_TEXTURE) \
+|| defined(CONVOLUTION_CONSTANT) || defined(FEATURE_DETECTION)
         cudaMemcpy(imgOut, d_imgOut, nbytesO, cudaMemcpyDeviceToHost); CUDA_CHECK;
 #endif
 #ifdef STRUCTURE_TENSOR
@@ -592,6 +659,21 @@ defined(L2) || defined(LAPLACIAN_NORM) || defined(CONVOLUTION) \
     free(imgOut11);
     free(imgOut12);
     free(imgOut22);
+#endif
+#ifdef FEATURE_DETECTION
+// d_gX, *d_gY, *d_m11, *d_m12, *d_m22, *d_imgOut11, *d_imgOut12, *d_imgOut22
+
+    cout << "nbytesI: " << nbytesI << " nbytesG: " << nbytesG << " nbytesO: " << nbytesO << endl;
+    cudaFree(d_imgIn); CUDA_CHECK;
+    cudaFree(d_gX); CUDA_CHECK;
+    cudaFree(d_gY); CUDA_CHECK;
+    cudaFree(d_m11); CUDA_CHECK;
+    cudaFree(d_m12); CUDA_CHECK;
+    cudaFree(d_m22); CUDA_CHECK;
+    cudaFree(d_imgOut11); CUDA_CHECK;
+    cudaFree(d_imgOut12); CUDA_CHECK;
+    cudaFree(d_imgOut22); CUDA_CHECK;
+    cudaFree(d_imgOut); CUDA_CHECK;
 #endif
 
 

@@ -8,7 +8,12 @@
 #include <iostream>
 
 // defs
+
 #define TMP 0
+#define COLOR_MIN 0.f
+#define COLOR_MAX 255.f
+#define DARKENING_FACTOR .5f
+
 //#define GAMMA
 //#define GRADIENT
 //#define DIVERGENCE
@@ -18,8 +23,10 @@
 //#define CONVOLUTION_SHARED
 //#define CONVOLUTION_TEXTURE
 //#define CONVOLUTION_CONSTANT
-#define STRUCTURE_TENSOR
-#ifdef STRUCTURE_TENSOR
+//#define STRUCTURE_TENSOR
+// best with s=.6 a=.002 b=.0006 IMO
+#define FEATURE_DETECTION
+#if defined(STRUCTURE_TENSOR) || defined(FEATURE_DETECTION)
 #define ROBUST_DERIVATIVE
 #endif
 
@@ -55,8 +62,45 @@ __global__ void pointwise_product(float *srcA, float *srcB, float *dst, int w, i
 __global__ void l2_norm(float *src, float *dst, int w, int h, int nc);
 void showSizeableImage(string title, const cv::Mat &mat, int x, int y);
 
+__global__ void feature_detect(float *src11, float *src12, float *src22, float *dst, int w, int h);
+__device__ void eigen_values(float *src, float *res);
 
 // function definitions
+
+__global__ void feature_detect(float *src, float *src11, float *src12,
+                                float *src22, float *dst, int w, int h, float alpha, float beta)
+{
+    int x = threadIdx.x + blockIdx.x*blockDim.x;
+    int y = threadIdx.y + blockIdx.y*blockDim.y;
+    int idx = IDX2(x, y, w);
+    float eigenvals[2], tensor[4];
+    if (x<w && y<h)
+    {
+        tensor[0] = src11[idx];
+        tensor[1] = tensor[2] = src12[idx];
+        tensor[3] = src22[idx];
+        eigen_values(tensor, eigenvals);
+        if (alpha<=eigenvals[0])//red= 255 - ((c+2)/3 * 255)
+        {
+            dst[IDX3(x, y, 0, w, h)] = COLOR_MAX;
+            dst[IDX3(x, y, 1, w, h)] = COLOR_MIN;
+            dst[IDX3(x, y, 2, w, h)] = COLOR_MIN;
+        }
+        else if (beta>=eigenvals[0] && alpha<=eigenvals[1])//yellow = ((4-c)/3)*255 assuming beta<alpha
+        {
+            dst[IDX3(x, y, 0, w, h)] = COLOR_MAX;
+            dst[IDX3(x, y, 1, w, h)] = COLOR_MAX;
+            dst[IDX3(x, y, 2, w, h)] = COLOR_MIN;
+        }
+        else
+        {
+            dst[IDX3(x, y, 0, w, h)] = src[IDX3(x, y, 0, w, h)]*DARKENING_FACTOR;
+            dst[IDX3(x, y, 1, w, h)] = src[IDX3(x, y, 1, w, h)]*DARKENING_FACTOR;
+            dst[IDX3(x, y, 2, w, h)] = src[IDX3(x, y, 2, w, h)]*DARKENING_FACTOR;
+        }
+    }
+}
+
 void kernel(float *dst, int r, float s)
 {
     int w = (2*r)+1;
@@ -128,11 +172,14 @@ __host__ __device__ float get_mat_val(const float *src, int x, int y, int c, int
     return src[IDX3(xt, yt, c, w, h)];
 }
 
-__device__ int eigen_valus(float *src, float *res, int *exist)
+__device__ void eigen_values(float *src, float *res)
 {
     float t = src[0]+src[3];
     float d = (src[0]*src[3]) - (src[1]*src[2]);
-    float pt = ((t*t)/4.f)-d, p;
+    float p = sqrtf(((t*t)/4.f)-d);
+    res[0] = 0.5*t-p;
+    res[1] = 0.5*t+p;
+    /**float pt = ((t*t)/4.f)-d, p;
     if (pt>=0)
     {
         p = sqrtf(pt);
@@ -140,7 +187,7 @@ __device__ int eigen_valus(float *src, float *res, int *exist)
         res[1] = 0.5*t+p;
         return 1;
     }
-    return 0;
+    return 0;*/
 }
 
 /**
