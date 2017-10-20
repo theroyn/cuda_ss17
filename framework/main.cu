@@ -15,7 +15,7 @@
 using namespace std;
 
 // uncomment to use the camera
-#define CAMERA
+//#define CAMERA
 
 
 
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     // ### TODO: Change the output image format as needed
     // ###
     // ###
-#if defined(L2) || defined(LAPLACIAN_NORM)
+#if defined(L2) || defined(LAPLACIAN_NORMXXX)
     cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
 #else
     cout << "mIn.channels():" << mIn.channels() << endl;
@@ -203,7 +203,7 @@ int main(int argc, char **argv)
 #endif
 #ifdef LAPLACIAN_NORM
     int nI = w*h*nc;
-    int nO = w*h;
+    int nO = w*h*nc;
     size_t nbytesI = (size_t)(nI)*sizeof(float);
     size_t nbytesO = (size_t)(nO)*sizeof(float);
     float *imgOut = (float *) malloc (nbytesO);
@@ -433,7 +433,7 @@ int main(int argc, char **argv)
 #ifdef GRADIENT
             dim3 block = dim3(32, 8, 1);
             dim3 grid = dim3((w + block.x - 1) / block.x, (h*nc + block.y - 1) / block.y, 1);
-            gradient<<<grid, block>>>(d_imgIn, d_gX, d_imgOut, w, h, nc);
+            gradient<<<grid, block>>>(d_imgIn, d_imgOut, d_gY, w, h, nc);
             cudaDeviceSynchronize();  CUDA_CHECK;//d_imgOut, d_gX, d_gY
 #endif
 #ifdef DIVERGENCE

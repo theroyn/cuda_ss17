@@ -15,7 +15,7 @@
 using namespace std;
 
 // uncomment to use the camera
-#define CAMERA
+//#define CAMERA
 
 
 

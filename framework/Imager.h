@@ -18,20 +18,20 @@
 //#define GRADIENT
 //#define DIVERGENCE
 //#define L2
-//#define LAPLACIAN_NORM
+#define LAPLACIAN_NORM
 //#define CONVOLUTION
 //#define CONVOLUTION_SHARED
 //#define CONVOLUTION_TEXTURE
 //#define CONVOLUTION_CONSTANT
 //#define STRUCTURE_TENSOR
 // best with s=.6 a=.002 b=.0006 IMO
-#define FEATURE_DETECTION
+//#define FEATURE_DETECTION
 #if defined(STRUCTURE_TENSOR) || defined(FEATURE_DETECTION)
 #define ROBUST_DERIVATIVE
 #endif
 
 #define IDX(x, y, c, w, nc) ((x+(y*w))*nc) + c
-#define IDX2(x, y, w) (x)+((y)*w)
+#define IDX2(x, y, w) (x)+((y)*(w))
 #define IDX3(x, y, c, w, h) (x)+((y)*w)+((c)*w*h)
 
 //#define IDX3(x, y, c, w, nc) c+(x*nc)+(y*w*nc)
@@ -403,7 +403,8 @@ __global__ void l2_norm(float *src, float *dst, int w, int h, int nc)
     size_t idx = IDX2(x,y,w);//x+y*w
     if (x < w && y < h)
     {
-        for (int c=0; c<nc; ++c) dst[idx] += src[IDX3(x,y,c,w,h)];
+        dst[idx] = 0;
+        for (int c=0; c<nc; ++c) dst[idx] += (src[IDX3(x,y,c,w,h)]*src[IDX3(x,y,c,w,h)]);
         dst[idx] = sqrtf(dst[idx]);
         //dst[idx] = src[IDX3(x,y,0,w,h)];
     } 
